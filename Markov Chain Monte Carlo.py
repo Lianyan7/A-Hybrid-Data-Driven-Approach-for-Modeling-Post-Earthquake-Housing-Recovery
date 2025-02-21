@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""
+Integrated Hierarchical Bayesian Analysis for Temporal Variables
+
+This script performs a two-step analysis:
+1. For each temporal variable (e.g., "Delay time" and "Recovery time"), the posterior
+   lognormal parameters are updated using Metropolis-Hastings MCMC based on provided prior info.
+2. Using the updated posterior parameters, the marginal posterior distribution is estimated
+   by integrating over a grid of lognormal parameters.
+
+Results (including posterior parameters and marginal statistics) are saved to an Excel file.
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import scipy.stats as stats
+from joblib import Parallel, delayed
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+
+# =======================
+# MCMC Posterior Estimation
+# =======================
+
+def mh_mcmc(prior_mu, prior_sigma, data, iterations=10000, burn_in=2000, plot_trace=False):
+    """
+    Metropolis-Hastings MCMC sampler to update posterior lognormal parameters.
+
+    Parameters:
+        prior_mu (float): Prior mean (log-scale)
+        prior_sigma (float): Prior sigma (log-scale)
+        data (np.ndarray): Sample data (assumed positive)
+        iterations (int): Total number of iterations
+        burn_in (int): Number of iterations to discard as burn-in
+        plot_trace (bool): If True, plot the trace of mu and sigma
+
+    Returns:
+        tuple: (final_mu, final_sigma) posterior estimates on log-scale.
+    """
+    samples_mu = []
+    samples_sigma = []
+    current_mu = prior_mu
+    current_sigma = prior_sigma
+
+    for _ in range(iterations):
+        # Propose new values for mu using a Gaussian proposal
+        proposed_mu = np.random.normal(current_mu, 0.05)
+
+        # Propose new values for sigma using a log-normal proposal (ensuring positivity)
+        proposed_sigma = np.random.lognormal(mean=np.log(current_sigma), sigma=0.05)
+
+        # Log-likelihoods using the lognormal model in log-space
+        log_likelihood_current = -0.5 * np.sum(((np.log(data) - current_mu) / current_sigma) ** 2) - len(data) * np.log(
+            current_sigma)
+        log_likelihood_proposed = -0.5 * np.sum(((np.log(data) - proposed_mu) / proposed_sigma) ** 2) - len(
+            data) * np.log(proposed_sigma)
+
+        acceptance_ratio = np.exp(log_likelihood_proposed - log_likelihood_current)
+
+        if np.random.rand() < acceptance_ratio:
+            current_mu = proposed_mu
+            current_sigma = proposed_sigma
+
+        samples_mu.append(current_mu)
+        samples_sigma.append(current_sigma)
+
+    if plot_trace:
+        plt.figure(figsize=(10, 6))
+        plt.plot(samples_mu, label='Trace of Mu', alpha=0.8)
+        plt.plot(samples_sigma, label='Trace of Sigma', alpha=0.8)
+        plt.axvline(burn_in, color='red', linestyle='--', label='Burn-in threshold')
+        plt.title('Trace Plot for Mu and Sigma')
+        plt.xlabel('Iterations')
+        plt.ylabel('Parameter Value')
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+    final_mu = np.mean(samples_mu[burn_in:])
+    final_sigma = np.mean(samples_sigma[burn_in:])
+    return final_mu, final_sigma
+
+
+def mcmc_posterior_estimation(data_file_path, sheets_to_process, prior_parameters, plot_trace=False):
+    """
+    Process the provided Excel file and compute posterior parameters via MCMC for each sheet and damage state.
+
+    Parameters:
+        data_file_path (str): Path to the Excel file.
+        sheets_to_process (list): List of sheet names to process.
+        prior_parameters (dict): Dictionary with prior parameters for each sheet and damage state.
+        plot_trace (bool): If True, generate a trace plot for the MCMC chain.
+
+    Returns:
+        list: List of dictionaries with MCMC posterior results.
+    """
+    results = []
+    for sheet_name in sheets_to_process:
+        data = pd.read_excel(data_file_path, sheet_name=sheet_name)
+        data.columns = data.columns.str.strip()
+
+        # Expected columns: "Damage States" and a variable column matching the sheet name
+        damage_state_column = "Damage States"
+        variable_column = sheet_name
+
+        if damage_state_column not in data.columns or variable_column not in data.columns:
+            raise ValueError(f"Missing required columns 'Damage States' or '{variable_column}' in sheet {sheet_name}")
+
+        grouped_data = data.groupby(damage_state_column)
+
+        for damage_state in ["Green", "Yellow", "Red"]:
+            if damage_state in grouped_data.groups:
+                group = grouped_data.get_group(damage_state)
+                sample_values = group[variable_column].values
+
+                prior_mu = prior_parameters[sheet_name][damage_state]["Mu"]
+                prior_sigma = prior_parameters[sheet_name][damage_state]["Sigma"]
+
+                logging.info(f"Processing {sheet_name} - {damage_state} with prior mu={prior_mu}, sigma={prior_sigma}")
+                post_mu, post_sigma = mh_mcmc(prior_mu, prior_sigma, sample_values, plot_trace=plot_trace)
+
+                results.append({
+                    "Variable": sheet_name,
+                    "Damage State": damage_state,
+                    "Prior Mu (log)": prior_mu,
+                    "Prior Sigma (log)": prior_sigma,
+                    "Posterior Mu (log)": post_mu,
+                    "Posterior Sigma (log)": post_sigma,
+                })
+    return results
+
+
+# =======================
+# Marginal Distribution Estimation
+# =======================
+
+def marginal_distribution_lognormal_optimised(mu_posterior, sigma_posterior, duration_min, duration_max, num_durations,
+                                              num_mus, num_sigmas, range_factor=2):
+    """
+    Compute the marginal distribution of a lognormal duration variable over a grid.
+
+    Parameters:
+        mu_posterior (float): Posterior mean (log-scale)
+        sigma_posterior (float): Posterior sigma (log-scale)
+        duration_min (float): Minimum duration
+        duration_max (float): Maximum duration
+        num_durations (int): Number of grid points for duration
+        num_mus (int): Number of grid points for mu
+        num_sigmas (int): Number of grid points for sigma
+        range_factor (float): Factor to define the grid range around mu_posterior
+
+    Returns:
+        dict: Dictionary containing the marginal mean and standard deviation.
+    """
+    duration_vector = np.linspace(duration_min, duration_max, num_durations)
+    mu_grid = np.linspace(mu_posterior - range_factor * sigma_posterior,
+                          mu_posterior + range_factor * sigma_posterior, num_mus)
+    sigma_grid = np.linspace(max(0.01, sigma_posterior - range_factor * sigma_posterior),
+                             sigma_posterior + range_factor * sigma_posterior, num_sigmas)
+
+    mu_prior_pdf = stats.norm.pdf(mu_grid, loc=mu_posterior, scale=sigma_posterior)
+    sigma_prior_pdf = stats.halfnorm.pdf(sigma_grid, scale=sigma_posterior)
+    joint_prior = np.outer(mu_prior_pdf, sigma_prior_pdf)
+
+    duration_matrix, mu_matrix, sigma_matrix = np.meshgrid(duration_vector, mu_grid, sigma_grid, indexing='ij')
+    conditional_pdf = stats.lognorm.pdf(duration_matrix, s=sigma_matrix, scale=np.exp(mu_matrix))
+
+    marginal_pdf = np.tensordot(conditional_pdf, joint_prior, axes=([1, 2], [0, 1]))
+    marginal_pdf /= np.trapz(marginal_pdf, duration_vector)
+
+    mean_duration = np.trapz(duration_vector * marginal_pdf, duration_vector)
+    variance_duration = np.trapz((duration_vector - mean_duration) ** 2 * marginal_pdf, duration_vector)
+    std_duration = np.sqrt(variance_duration)
+
+    return {"mean_duration": mean_duration, "std_duration": std_duration}
+
+
+def process_posterior(variable, state, params, duration_min, duration_max, num_durations, num_mus, num_sigmas,
+                      range_factor):
+    """
+    Wrapper for computing the marginal distribution for a given variable and damage state.
+
+    Parameters:
+        variable (str): Variable name.
+        state (str): Damage state.
+        params (dict): Dictionary containing "Mu" and "Sigma" for the posterior.
+        duration_min (float): Minimum duration.
+        duration_max (float): Maximum duration.
+        num_durations (int): Grid size for duration.
+        num_mus (int): Grid size for mu.
+        num_sigmas (int): Grid size for sigma.
+        range_factor (float): Grid range factor.
+
+    Returns:
+        dict: Dictionary with marginal mean and standard deviation along with the posterior parameters.
+    """
+    mu_posterior = params["Mu"]
+    sigma_posterior = params["Sigma"]
+
+    marginal_results = marginal_distribution_lognormal_optimised(
+        mu_posterior=mu_posterior,
+        sigma_posterior=sigma_posterior,
+        duration_min=duration_min,
+        duration_max=duration_max,
+        num_durations=num_durations,
+        num_mus=num_mus,
+        num_sigmas=num_sigmas,
+        range_factor=range_factor,
+    )
+
+    return {
+        "Variable": variable,
+        "Damage State": state,
+        "Posterior Mu (log)": mu_posterior,
+        "Posterior Sigma (log)": sigma_posterior,
+        "Marginal Mean": marginal_results["mean_duration"],
+        "Marginal SD": marginal_results["std_duration"],
+    }
+
+
+# =======================
+# Main Execution
+# =======================
+
+def main():
+    # File paths and settings
+    data_file_path = 'All data with three damage state.xlsx'  # Replace with actual file path
+    sheets_to_process = ["Delay time", "Recovery time"]
+
+    # Prior parameters for MCMC (update these as needed)
+    prior_parameters = {
+        "Delay time": {
+            "Green": {"Mu": 6.64873749, "Sigma": 0.41437705},
+            "Yellow": {"Mu": 6.66327815, "Sigma": 0.456212616},
+            "Red": {"Mu": 6.817026192, "Sigma": 0.38888417},
+        },
+        "Recovery time": {
+            "Green": {"Mu": 6.881716767, "Sigma": 0.347677835},
+            "Yellow": {"Mu": 6.979845144, "Sigma": 0.363129268},
+            "Red": {"Mu": 7.232511233, "Sigma": 0.284890727},
+        },
+    }
+
+    # Step 1: Perform MCMC to update posterior parameters
+    logging.info("Starting MCMC posterior estimation...")
+    mcmc_results = mcmc_posterior_estimation(data_file_path, sheets_to_process, prior_parameters, plot_trace=False)
+    mcmc_df = pd.DataFrame(mcmc_results)
+    logging.info("MCMC posterior estimation completed.")
+
+    # Create a dictionary for marginal processing using the MCMC outputs
+    # Structure: {variable: {state: {"Mu": ..., "Sigma": ...}}}
+    posterior_data = {}
+    for row in mcmc_results:
+        variable = row["Variable"]
+        state = row["Damage State"]
+        if variable not in posterior_data:
+            posterior_data[variable] = {}
+        posterior_data[variable][state] = {
+            "Mu": row["Posterior Mu (log)"],
+            "Sigma": row["Posterior Sigma (log)"]
+        }
+
+    # Parameters for marginal distribution estimation
+    duration_min = 0.01
+    duration_max = 5000
+    num_durations = 1000
+    num_mus = 200
+    num_sigmas = 200
+    range_factor = 2
+
+    # Step 2: Compute marginal distributions in parallel
+    logging.info("Starting marginal distribution estimation...")
+    marginal_results = Parallel(n_jobs=-1)(
+        delayed(process_posterior)(
+            variable, state, params, duration_min, duration_max, num_durations, num_mus, num_sigmas, range_factor
+        )
+        for variable, states in posterior_data.items()
+        for state, params in states.items()
+    )
+    marginal_df = pd.DataFrame(marginal_results)
+    logging.info("Marginal distribution estimation completed.")
+
+    # Merge MCMC and marginal results if desired or save separately.
+    # Here, we merge on Variable and Damage State.
+    merged_df = pd.merge(mcmc_df, marginal_df, on=["Variable", "Damage State"], how="left")
+
+    # Save results to Excel
+    output_file = "Integrated_Posterior_Analysis.xlsx"
+    merged_df.to_excel(output_file, index=False)
+    logging.info(f"Integrated results saved to '{output_file}'")
+
+
+if __name__ == "__main__":
+    main()
