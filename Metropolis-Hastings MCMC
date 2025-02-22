@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 # MCMC Posterior Estimation
 # =======================
 
-def mh_mcmc(prior_mu, prior_sigma, data, iterations=10000, burn_in=2000, plot_trace=False):
+def mh_mcmc(prior_mu, prior_sigma, data, iterations=1000000, burn_in=15000, plot_trace=False):
     """
     Metropolis-Hastings MCMC sampler to update posterior lognormal parameters.
 
@@ -243,7 +243,7 @@ def main():
             "Yellow": {"Mu": 6.979845144, "Sigma": 0.363129268},
             "Red": {"Mu": 7.232511233, "Sigma": 0.284890727},
         },
-    }
+    } #This should be informed by the estalished prior beliefs or expert judgements.
 
     # Step 1: Perform MCMC to update posterior parameters
     logging.info("Starting MCMC posterior estimation...")
