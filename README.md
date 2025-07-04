@@ -6,7 +6,7 @@ This project presents a hybrid data-driven approach for modeling post-earthquake
 
 Approval for data collection was obtained from the University of Auckland Human Participants Ethics Committee (Reference Number 25474). The data utilized in this manuscript comprises private insurance claim settlements and is not publicly available due to confidentiality restrictions. As such, only the Python codes and essential input/output information are made available in this repository. The code was developed by Lianyan Li and is based on the methodologies described in the following publication:
 
-Li, L., Chang-Richards, A., et al. (2025). ***A Hybrid Data-Driven Approach for Modeling Post-Earthquake Housing Recovery***. Earthquake Spectra.
+Li, L., Chang-Richards, A., et al. (2025). ***A Hybrid Data-Driven Approach for Modeling Post-Earthquake Housing Recovery***. Earthquake Spectra, pp. 1-29. doi: https://doi.org/10.1177/87552930251345841
 
 For individual-level building recovery modelling, three Python scripts—_Kolmogorov–Smirnov (KS) test.py, Metropolis-Hastings MCMC.py, and Empirical Bayes.py_—are provided. These scripts estimate the theoretical distributions of the temporal variables using the KS test and update the parameters of temporal variables based on the prior information detailed in _Prior beliefs of the parameters.xlsx_ and the descriptive statistics of the collected empirical dataset presented in _Summarized statistics of the collected empirical dataset.xlsx_. The KS test results are documented in _KS test results.xlsx_.
 
